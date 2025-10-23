@@ -237,6 +237,8 @@ const BACKEND_URL = "https://hsrpibsdfzzzvfmfakqu.supabase.co/functions/v1/chatb
 // State variables
 let sessionId = crypto.randomUUID();
 let currentThreadId = null;
+let retryCount = 0;
+const MAX_RETRIES = 2;
 
 console.log('🚀 SkAi High-Performance Chatbot initializing...');
 
@@ -247,202 +249,254 @@ async function initializeThread() {
     await createThread();
     console.log('✅ Thread ready! First message will be instant.');
   } catch (error) {
-    console.log('Thread will be created on first message');
+    console.log('⚠️ Thread pre-warming failed, will create on first message');
   }
 }
 
 // UI Functions
 function showConnectionStatus(message, type = 'info') {
-const status = document.getElementById('connectionStatus');
-status.textContent = message;
-status.className = `connection-status ${type}`;
-status.style.display = 'block';
-setTimeout(() => {
-status.style.display = 'none';
-}, 3000);
+  const status = document.getElementById('connectionStatus');
+  status.textContent = message;
+  status.className = `connection-status ${type}`;
+  status.style.display = 'block';
+  setTimeout(() => {
+    status.style.display = 'none';
+  }, 3000);
 }
 
 function addMessage(content, className = "bot-message") {
-const chatBody = document.getElementById("chat-body");
-const msg = document.createElement("div");
-msg.className = className;
+  const chatBody = document.getElementById("chat-body");
+  const msg = document.createElement("div");
+  msg.className = className;
 
-if (className === "bot-message" || className === "promotion-message") {
-const linkRegex = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
-let processedContent = content.replace(linkRegex, (match, text, url) => {
-if (url.includes('stripe.com') || url.includes('booking') || url.includes('reserve') || url.includes('buy')) {
-return `<a href="${url}" target="_blank" class="purchase-button">${text}</a>`;
-} else {
-return `<a href="${url}" target="_blank" style="color: #93c5fd; text-decoration: underline;">${text}</a>`;
-}
-});
+  if (className === "bot-message" || className === "promotion-message") {
+    const linkRegex = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+    let processedContent = content.replace(linkRegex, (match, text, url) => {
+      if (url.includes('stripe.com') || url.includes('booking') || url.includes('reserve') || url.includes('buy')) {
+        return `<a href="${url}" target="_blank" class="purchase-button">${text}</a>`;
+      } else {
+        return `<a href="${url}" target="_blank" style="color: #93c5fd; text-decoration: underline;">${text}</a>`;
+      }
+    });
 
-processedContent = processedContent.replace(
-/(https?:\/\/[^\s\)]+)(?![^<]*<\/a>)/g,
-'<a href="$1" target="_blank" style="color: #93c5fd; text-decoration: underline;">$1</a>'
-);
+    processedContent = processedContent.replace(
+      /(https?:\/\/[^\s\)]+)(?![^<]*<\/a>)/g,
+      '<a href="$1" target="_blank" style="color: #93c5fd; text-decoration: underline;">$1</a>'
+    );
 
-msg.innerHTML = processedContent;
-} else {
-msg.textContent = content;
-}
+    msg.innerHTML = processedContent;
+  } else {
+    msg.textContent = content;
+  }
 
-chatBody.appendChild(msg);
-chatBody.scrollTop = chatBody.scrollHeight;
-return msg;
+  chatBody.appendChild(msg);
+  chatBody.scrollTop = chatBody.scrollHeight;
+  return msg;
 }
 
 function showTypingIndicator() {
-const chatBody = document.getElementById("chat-body");
-const typingDiv = document.createElement("div");
-typingDiv.className = "typing-indicator";
-typingDiv.id = "typing-indicator";
+  const chatBody = document.getElementById("chat-body");
+  const typingDiv = document.createElement("div");
+  typingDiv.className = "typing-indicator";
+  typingDiv.id = "typing-indicator";
 
-const dotsContainer = document.createElement("div");
-dotsContainer.className = "typing-dots";
+  const dotsContainer = document.createElement("div");
+  dotsContainer.className = "typing-dots";
 
-for (let i = 0; i < 3; i++) {
-const dot = document.createElement("div");
-dot.className = "typing-dot";
-dotsContainer.appendChild(dot);
-}
+  for (let i = 0; i < 3; i++) {
+    const dot = document.createElement("div");
+    dot.className = "typing-dot";
+    dotsContainer.appendChild(dot);
+  }
 
-typingDiv.appendChild(dotsContainer);
-chatBody.appendChild(typingDiv);
-chatBody.scrollTop = chatBody.scrollHeight;
-return typingDiv;
+  typingDiv.appendChild(dotsContainer);
+  chatBody.appendChild(typingDiv);
+  chatBody.scrollTop = chatBody.scrollHeight;
+  return typingDiv;
 }
 
 function removeTypingIndicator() {
-const typing = document.getElementById("typing-indicator");
-if (typing) {
-typing.remove();
-}
-}
-
-// Backend API Functions
-async function callBackend(action, payload = {}) {
-const response = await fetch(BACKEND_URL, {
-method: 'POST',
-headers: {
-'Content-Type': 'application/json',
-},
-body: JSON.stringify({
-chatbot_id: CHATBOT_ID,
-action: action,
-...payload
-})
-});
-
-if (!response.ok) {
-throw new Error(`Backend error: ${response.status}`);
+  const typing = document.getElementById("typing-indicator");
+  if (typing) {
+    typing.remove();
+  }
 }
 
-const result = await response.json();
-if (!result.success) {
-throw new Error(result.error || 'Backend request failed');
-}
+// Backend API Functions with improved error handling
+async function callBackend(action, payload = {}, attempt = 1) {
+  try {
+    console.log(`🔄 Calling backend: ${action} (attempt ${attempt}/${MAX_RETRIES + 1})`);
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 45000); // 45 second timeout
+    
+    const response = await fetch(BACKEND_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        chatbot_id: CHATBOT_ID,
+        action: action,
+        ...payload
+      }),
+      signal: controller.signal
+    });
 
-return result.data;
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`❌ Backend error ${response.status}:`, errorText);
+      throw new Error(`Backend error: ${response.status} - ${errorText}`);
+    }
+
+    const result = await response.json();
+    
+    if (!result.success) {
+      console.error('❌ Backend returned error:', result.error);
+      throw new Error(result.error || 'Backend request failed');
+    }
+
+    console.log(`✅ Backend call successful: ${action}`);
+    return result.data;
+    
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      console.error('❌ Request timeout after 45 seconds');
+      throw new Error('Response timeout - the AI is taking too long to respond');
+    }
+    
+    // Retry logic for network errors
+    if (attempt <= MAX_RETRIES && (error.message.includes('fetch') || error.message.includes('network'))) {
+      console.log(`🔄 Retrying... (${attempt}/${MAX_RETRIES})`);
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
+      return callBackend(action, payload, attempt + 1);
+    }
+    
+    console.error('❌ Backend call failed:', error);
+    throw error;
+  }
 }
 
 async function createThread() {
-try {
-const thread = await callBackend('create_thread');
-currentThreadId = thread.id;
-console.log('✅ Thread created:', currentThreadId);
-return currentThreadId;
-} catch (error) {
-console.error('❌ Error creating thread:', error);
-throw error;
-}
+  try {
+    const thread = await callBackend('create_thread');
+    currentThreadId = thread.id;
+    console.log('✅ Thread created:', currentThreadId);
+    return currentThreadId;
+  } catch (error) {
+    console.error('❌ Error creating thread:', error);
+    throw error;
+  }
 }
 
 async function sendToBackend(message) {
-try {
-if (!currentThreadId) {
-await createThread();
-}
+  try {
+    if (!currentThreadId) {
+      console.log('📝 Creating new thread...');
+      await createThread();
+    }
 
-// SPEED OPTIMIZATION: Add timeout to prevent hanging
-const timeoutMs = 15000; // 15 second timeout
-const timeoutPromise = new Promise((_, reject) => 
-setTimeout(() => reject(new Error('Response timeout')), timeoutMs)
-);
+    console.log('📤 Sending message to backend...');
+    const response = await callBackend('send_message', {
+      message: message,
+      thread_id: currentThreadId
+    });
 
-const responsePromise = callBackend('send_message', {
-message: message,
-thread_id: currentThreadId
-});
-
-// Race between response and timeout
-const response = await Promise.race([responsePromise, timeoutPromise]);
-
-return response;
-} catch (error) {
-console.error('❌ Error with backend:', error);
-throw error;
-}
+    console.log('✅ Response received from backend');
+    return response;
+    
+  } catch (error) {
+    console.error('❌ Error with backend:', error);
+    
+    // If thread error, try creating new thread once
+    if (error.message.includes('thread') && retryCount < 1) {
+      retryCount++;
+      console.log('🔄 Thread issue detected, creating new thread...');
+      currentThreadId = null;
+      return sendToBackend(message);
+    }
+    
+    throw error;
+  }
 }
 
 async function saveChatHistory(userMessage, botResponse) {
-try {
-await callBackend('save_chat', {
-message: userMessage,
-response: botResponse,
-session_id: sessionId
-});
-console.log('💾 Chat history saved');
-} catch (error) {
-console.error("Error saving chat history:", error);
-}
+  try {
+    await callBackend('save_chat', {
+      message: userMessage,
+      response: botResponse,
+      session_id: sessionId
+    });
+    console.log('💾 Chat history saved');
+  } catch (error) {
+    console.error("⚠️ Error saving chat history:", error);
+    // Don't throw - this is not critical
+  }
 }
 
 async function sendMessage() {
-const input = document.getElementById("user-input");
-const message = input.value.trim();
-if (message === "") return;
+  const input = document.getElementById("user-input");
+  const message = input.value.trim();
+  if (message === "") return;
 
-const sendButton = document.getElementById("send-button");
-sendButton.disabled = true;
+  const sendButton = document.getElementById("send-button");
+  sendButton.disabled = true;
+  retryCount = 0; // Reset retry count for new message
 
-addMessage(message, "user-message");
-input.value = "";
-showTypingIndicator();
+  addMessage(message, "user-message");
+  input.value = "";
+  showTypingIndicator();
 
-try {
-const response = await sendToBackend(message);
-removeTypingIndicator();
-addMessage(response, "bot-message");
-await saveChatHistory(message, response);
-} catch (error) {
-console.error("API Error:", error);
-removeTypingIndicator();
-addMessage("I apologize, but I encountered an error. Please try asking again, and I'll do my best to help you!", "bot-message");
+  try {
+    console.log('💬 Processing message:', message);
+    const response = await sendToBackend(message);
+    removeTypingIndicator();
+    addMessage(response, "bot-message");
+    await saveChatHistory(message, response);
+    console.log('✅ Message processed successfully');
+  } catch (error) {
+    console.error("❌ Message processing error:", error);
+    removeTypingIndicator();
+    
+    let errorMessage = "I apologize, but I'm having trouble connecting right now. ";
+    
+    if (error.message.includes('timeout')) {
+      errorMessage += "The response is taking longer than expected. Please try again with a shorter question, or contact us directly at (956) 905-2568.";
+    } else if (error.message.includes('network') || error.message.includes('fetch')) {
+      errorMessage += "Please check your internet connection and try again.";
+    } else {
+      errorMessage += "Please try again in a moment. If the issue persists, call us at (956) 905-2568.";
+    }
+    
+    addMessage(errorMessage, "bot-message");
+  }
+
+  sendButton.disabled = false;
+  input.focus();
 }
 
-sendButton.disabled = false;
-input.focus();
-}
-
+// Initialize on page load
 document.addEventListener("DOMContentLoaded", async function () {
-console.log('🎯 DOM loaded, initializing SkAi...');
+  console.log('🎯 DOM loaded, initializing SkAi...');
 
-// ===== PERFORMANCE OPTIMIZATION: Pre-warm thread =====
-initializeThread();
+  // Pre-warm thread for faster first response
+  initializeThread();
 
-const input = document.getElementById("user-input");
-input.addEventListener("keydown", function (event) {
-if (event.key === "Enter") {
-event.preventDefault();
-sendMessage();
-}
+  const input = document.getElementById("user-input");
+  input.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      sendMessage();
+    }
+  });
+
+  input.focus();
+  console.log('✅ SkAi chatbot ready!');
 });
 
-input.focus();
-console.log('✅ SkAi chatbot ready!');
-});
-
+// Make functions available globally
 window.sendMessage = sendMessage;
 </script>
 </body>
