@@ -44,7 +44,7 @@
 
     .chat-body{
       flex:1;padding:25px;overflow-y:auto;background:linear-gradient(to bottom,#f8fafc,#f1f5f9);
-      display:flex;flex-direction:column;gap:15px;
+      display:flex;flex-direction:column;gap:15px;min-height:0;
     }
 
     .bot-message,.user-message,.promotion-message{
@@ -64,14 +64,6 @@
       background:linear-gradient(135deg,#60a5fa 0%,#3b82f6 100%);color:white;align-self:flex-start;
       border-left:4px solid #2563eb;font-weight:500;box-shadow:0 4px 15px rgba(96,165,250,.3);
     }
-
-    .welcome-section{
-      text-align:center;padding:25px;background:white;border-radius:16px;
-      box-shadow:0 4px 15px rgba(0,0,0,.05);border:1px solid #e2e8f0;margin-bottom:20px;
-    }
-    .welcome-section .icon{font-size:32px;margin-bottom:12px}
-    .welcome-section h3{color:#1e293b;margin-bottom:8px;font-size:18px;font-weight:600}
-    .welcome-section p{color:#475569;margin-bottom:20px}
 
     .chat-input{
       padding:25px;background:white;border-top:1px solid #e2e8f0;
@@ -162,10 +154,6 @@
       .bot-message,.user-message,.promotion-message{
         max-width:95%;padding:12px 16px;font-size:14px;border-radius:16px;
       }
-      .welcome-section{padding:20px 15px;margin-bottom:15px;border-radius:12px}
-      .welcome-section .icon{font-size:28px;margin-bottom:10px}
-      .welcome-section h3{font-size:16px;margin-bottom:8px}
-      .welcome-section p{font-size:14px;line-height:1.5;margin-bottom:15px}
       .chat-input{
         padding:15px;padding-bottom:calc(15px + env(safe-area-inset-bottom,0px));gap:10px;
       }
@@ -213,15 +201,10 @@
 <div class="status-indicator"></div>
 <div class="chat-header-content">
 <h1>SkAi</h1>
-<p>Your Intelligent AI Assistant</p>
+<p>También hablo español</p>
 </div>
 </div>
 <div class="chat-body" id="chat-body">
-<div class="welcome-section">
-<div class="icon">🤖</div>
-<h3>Welcome to SkAi!</h3>
-<p>I'm your intelligent AI assistant! Ask me anything and I'll do my best to help you.</p>
-</div>
 </div>
 <div class="chat-input">
 <input type="text" id="user-input" placeholder="Type your message here..." />
@@ -230,7 +213,7 @@
 </div>
 
 <script type="module">
-// ===== FAST-RESPONSE CONFIGURATION =====
+// ===== CONFIGURATION =====
 const CHATBOT_ID = "e16c36cb-d8ee-4143-a9c7-3c1a521ebfba";
 const BACKEND_URL = "https://hsrpibsdfzzzvfmfakqu.supabase.co/functions/v1/chatbot-proxy";
 
@@ -239,8 +222,53 @@ let sessionId = crypto.randomUUID();
 let currentThreadId = null;
 let retryCount = 0;
 const MAX_RETRIES = 2;
+let userEmail = null;
+let emailCaptured = false;
 
 console.log('🚀 SkAi High-Performance Chatbot initializing...');
+
+// ===== EMAIL VALIDATION =====
+function isValidEmail(email) {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+}
+
+function extractEmail(message) {
+  const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g;
+  const matches = message.match(emailRegex);
+  return matches ? matches[0] : null;
+}
+
+// ===== SAVE EMAIL TO SUPABASE =====
+async function saveEmailToSupabase(email, businessInfo) {
+  try {
+    const response = await fetch(BACKEND_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        chatbot_id: CHATBOT_ID,
+        action: 'save_lead',
+        email: email,
+        business_info: businessInfo,
+        session_id: sessionId,
+        captured_at: new Date().toISOString()
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to save email');
+    }
+
+    const result = await response.json();
+    console.log('✅ Email saved to Supabase:', email);
+    return result;
+  } catch (error) {
+    console.error('❌ Error saving email:', error);
+    // Don't throw - we don't want to break the chat if email save fails
+  }
+}
 
 // ===== PERFORMANCE OPTIMIZATION: Pre-create thread on load =====
 async function initializeThread() {
@@ -427,7 +455,8 @@ async function saveChatHistory(userMessage, botResponse) {
     await callBackend('save_chat', {
       message: userMessage,
       response: botResponse,
-      session_id: sessionId
+      session_id: sessionId,
+      email: userEmail // Include email if captured
     });
     console.log('💾 Chat history saved');
   } catch (error) {
@@ -447,6 +476,22 @@ async function sendMessage() {
 
   addMessage(message, "user-message");
   input.value = "";
+
+  // Check for email in the message
+  if (!emailCaptured) {
+    const detectedEmail = extractEmail(message);
+    if (detectedEmail && isValidEmail(detectedEmail)) {
+      userEmail = detectedEmail;
+      emailCaptured = true;
+      console.log('📧 Email captured:', userEmail);
+      
+      // Save email to Supabase
+      await saveEmailToSupabase(userEmail, message);
+      
+      showConnectionStatus('✓ Email saved!', 'success');
+    }
+  }
+
   showTypingIndicator();
 
   try {
@@ -483,6 +528,11 @@ document.addEventListener("DOMContentLoaded", async function () {
 
   // Pre-warm thread for faster first response
   initializeThread();
+
+  // Add new welcome message
+  setTimeout(() => {
+    addMessage("Hi! Great to have you here!\n\nBefore we get started, tell me a bit about your business or the product you offer.\n\nAnd please share your email so we can continue 👌", "bot-message");
+  }, 800);
 
   const input = document.getElementById("user-input");
   input.addEventListener("keydown", function (event) {
